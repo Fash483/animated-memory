@@ -4,8 +4,8 @@ set -euo pipefail
 # Hardcoded Configuration
 FILEMIRAGE_API_TOKEN="9QQH-DGES-CWQZ-FXNV"
 FOLDER_PATH="downloaded_files"
-LINK_FETCH_URL="https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt"
-KILL_SWITCH_URL="https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt"
+LINK_FETCH_URL="https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
+KILL_SWITCH_URL="https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
 MAX_PARALLEL_DOWNLOADS=5
 MAX_PARALLEL_UPLOADS=4
 
@@ -23,8 +23,8 @@ import requests, time, os, subprocess
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-link_url = "https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt"
-kill_url = "https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt"
+link_url = "https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
+kill_url = "https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
 folder_path = "downloaded_files"
 max_workers = 5
 downloaded_links = set()
