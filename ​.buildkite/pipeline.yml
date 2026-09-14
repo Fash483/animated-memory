@@ -1,0 +1,8 @@
+steps:
+  - label: "📦 Download, Process & Upload"
+    key: "download_process_upload"
+    command:
+      - "chmod +x .buildkite/scripts/run.sh"
+      - ".buildkite/scripts/run.sh"
+    agents:
+      queue: "default"
