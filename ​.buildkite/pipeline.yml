@@ -1,0 +1,6 @@
+steps:
+  - label: "🧲 Download Torrents & Upload to Filemirage"
+    key: "download_process_upload"
+    command:
+      - "chmod +x .buildkite/scripts/run.sh"
+      - ".buildkite/scripts/run.sh"
