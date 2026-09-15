@@ -224,16 +224,19 @@ for r, dirs, files in os.walk(folder, topdown=False):
         os.rmdir(r)
 EOF
 
-echo "📤 Uploading Structured Folders to Gofile using Root Folder API..."
+  echo "📤 Uploading Structured Folders to Gofile using Root Folder API..."
 python3 - << 'EOF'
 import os
+import subprocess
 import requests
 
-GOFILE_TOKEN = ""        # Optional: Account API token
-ROOT_FOLDER_ID = ""      # Recommended: Set your Gofile parent folder ID here
+GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN", "")
+ROOT_FOLDER_ID = os.environ.get("ROOT_FOLDER_ID", "")
 FOLDER_PATH = 'downloads'
 
-# 1. Get active server
+summary_links = []
+
+# 1. Fetch active server
 try:
     srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
     if srv_res.get("status") == "ok" and srv_res['data']['servers']:
@@ -245,15 +248,10 @@ except Exception as e:
     exit(1)
 
 def create_gofile_folder(parent_id, folder_name):
-    """Creates an explicitly named folder on Gofile under parent_id."""
     url = "https://api.gofile.io/contents/createFolder"
-    payload = {
-        "parentFolderId": parent_id,
-        "folderName": folder_name
-    }
+    payload = {"parentFolderId": parent_id, "folderName": folder_name}
     if GOFILE_TOKEN:
         payload["token"] = GOFILE_TOKEN
-        
     try:
         res = requests.post(url, json=payload, timeout=15).json()
         if res.get("status") == "ok":
@@ -263,7 +261,6 @@ def create_gofile_folder(parent_id, folder_name):
     return None, None
 
 def upload_to_gofile(file_path, folder_id=None):
-    """Uploads a file to a specific Gofile folder ID."""
     url = f"https://{SERVER}.gofile.io/contents/uploadfile"
     data = {}
     if GOFILE_TOKEN:
@@ -282,15 +279,12 @@ if os.path.exists(FOLDER_PATH):
         
         if os.path.isdir(item_path):
             print(f"\n📁 Processing local folder: {item}")
-            
-            # Create folder on Gofile named after the local folder stem
             gofile_folder_id = None
             gofile_url = None
             
             if ROOT_FOLDER_ID:
                 gofile_folder_id, gofile_url = create_gofile_folder(ROOT_FOLDER_ID, item)
             
-            # Fallback upload if ROOT_FOLDER_ID not set
             for root, _, files in os.walk(item_path):
                 for filename in files:
                     if any(x in filename for x in [".!qB", ".part", ".aria2"]):
@@ -311,6 +305,7 @@ if os.path.exists(FOLDER_PATH):
             
             if gofile_url:
                 print(f"🔗 Folder Link: {gofile_url}")
+                summary_links.append(f"* **{item}**: [{gofile_url}]({gofile_url})")
 
         elif os.path.isfile(item_path):
             if any(x in item for x in [".!qB", ".part", ".aria2"]):
@@ -320,5 +315,18 @@ if os.path.exists(FOLDER_PATH):
             res = upload_to_gofile(item_path, folder_id=ROOT_FOLDER_ID if ROOT_FOLDER_ID else None)
             if res.get("status") == "ok":
                 data = res.get("data", {})
-                print(f"🔗 File Link: {data.get('downloadPage')}")
+                url = data.get('downloadPage')
+                print(f"🔗 File Link: {url}")
+                summary_links.append(f"* **{item}**: [{url}]({url})")
+
+# Job-scoped Buildkite Annotation
+if summary_links and subprocess.run(["which", "buildkite-agent"], capture_output=True).returncode == 0:
+    markdown_body = "### 📦 Generated Gofile Links\n\n" + "\n".join(summary_links)
+    subprocess.run([
+        "buildkite-agent", "annotate", markdown_body,
+        "--style", "success",
+        "--scope", "job",
+        "--context", "gofile-results"
+    ])
 EOF
+                  
