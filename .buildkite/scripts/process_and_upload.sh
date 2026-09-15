@@ -1,18 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "📦 Installing dependencies (aria2, Python3)..."
+export DEBIAN_FRONTEND=noninteractive
+
+echo "📦 Installing system dependencies..."
 if command -v sudo >/dev/null 2>&1; then
-    sudo apt update
-    sudo apt install -y aria2 python3 python3-requests python3-pip curl
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq aria2 python3 python3-requests python3-pip curl >/dev/null
 else
-    apt update
-    apt install -y aria2 python3 python3-requests python3-pip curl
+    apt-get update -qq
+    apt-get install -y -qq aria2 python3 python3-requests python3-pip curl >/dev/null
 fi
 
 pip3 install --break-system-packages magnet2torrent requests || pip3 install magnet2torrent requests || true
 
-echo "🧲 Converting magnets to torrents via magnet2torrent..."
+echo "🧲 Converting magnets to torrents..."
 mkdir -p downloads torrents
 
 python3 - << 'EOF'
@@ -82,7 +84,7 @@ async def download_torrent(torrent_file, sem, max_retries=3):
                 torrent_file
             ]
             
-            proc = await asyncio.Process = await asyncio.create_subprocess_exec(*cmd)
+            proc = await asyncio.create_subprocess_exec(*cmd)
             await proc.communicate()
             
             if proc.returncode == 0:
@@ -146,7 +148,6 @@ def move_with_subtitles(file_path, target_folder):
             if sub_file != sub_dst:
                 shutil.move(sub_file, sub_dst)
 
-# 1. Archives (.rar, .zip) -> Dedicated folder per archive
 for r, _, files in os.walk(folder):
     for f in files:
         if f.lower().endswith(archive_ext):
@@ -156,7 +157,6 @@ for r, _, files in os.walk(folder):
             if os.path.dirname(arc_path) != target_dir:
                 move_with_subtitles(arc_path, target_dir)
 
-# 2. Existing nested folders with >3 videos -> Protect and keep intact
 protected_dirs = set()
 if os.path.exists(folder):
     for item in os.listdir(folder):
@@ -170,7 +170,6 @@ if os.path.exists(folder):
                 print(f"🔒 Keeping existing nested folder intact (>3 videos): {item}")
                 protected_dirs.add(item_path)
 
-# 3. Collect remaining videos outside protected folders
 remaining_videos = []
 for r, _, files in os.walk(folder):
     if any(r.startswith(p_dir) for p_dir in protected_dirs):
@@ -198,7 +197,6 @@ for vid_path in remaining_videos:
     else:
         movies.append(vid_path)
 
-# 4. Process Series
 for group_key, vids in series_groups.items():
     if len(vids) > 3:
         first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
@@ -210,13 +208,11 @@ for group_key, vids in series_groups.items():
         for v in vids:
             move_with_subtitles(v, date_dir)
 
-# 5. Process Movies (1 video = 1 folder)
 for m in movies:
     stem = os.path.splitext(os.path.basename(m))[0]
     movie_dir = os.path.join(folder, stem)
     move_with_subtitles(m, movie_dir)
 
-# Cleanup empty directories
 for r, dirs, files in os.walk(folder, topdown=False):
     if r == folder or any(r.startswith(p_dir) for p_dir in protected_dirs):
         continue
@@ -224,7 +220,7 @@ for r, dirs, files in os.walk(folder, topdown=False):
         os.rmdir(r)
 EOF
 
-  echo "📤 Uploading Structured Folders to Gofile using Root Folder API..."
+echo "📤 Uploading Folders to Gofile..."
 python3 - << 'EOF'
 import os
 import subprocess
@@ -236,7 +232,6 @@ FOLDER_PATH = 'downloads'
 
 summary_links = []
 
-# 1. Fetch active server
 try:
     srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
     if srv_res.get("status") == "ok" and srv_res['data']['servers']:
@@ -305,7 +300,7 @@ if os.path.exists(FOLDER_PATH):
             
             if gofile_url:
                 print(f"🔗 Folder Link: {gofile_url}")
-                summary_links.append(f"* **{item}**: [{gofile_url}]({gofile_url})")
+                summary_links.append(f"* **{item}**: {gofile_url}")
 
         elif os.path.isfile(item_path):
             if any(x in item for x in [".!qB", ".part", ".aria2"]):
@@ -317,16 +312,17 @@ if os.path.exists(FOLDER_PATH):
                 data = res.get("data", {})
                 url = data.get('downloadPage')
                 print(f"🔗 File Link: {url}")
-                summary_links.append(f"* **{item}**: [{url}]({url})")
+                summary_links.append(f"* **{item}**: {url}")
 
-# Job-scoped Buildkite Annotation
-if summary_links and subprocess.run(["which", "buildkite-agent"], capture_output=True).returncode == 0:
+# Safe annotation call with error suppression so it never breaks pipeline exit status
+if summary_links:
     markdown_body = "### 📦 Generated Gofile Links\n\n" + "\n".join(summary_links)
-    subprocess.run([
-        "buildkite-agent", "annotate", markdown_body,
-        "--style", "success",
-        "--scope", "job",
-        "--context", "gofile-results"
-    ])
+    try:
+        subprocess.run([
+            "buildkite-agent", "annotate", markdown_body,
+            "--style", "success",
+            "--context", "gofile-results"
+        ], check=False)
+    except Exception:
+        pass
 EOF
-                  
