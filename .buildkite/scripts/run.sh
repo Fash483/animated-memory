@@ -1,170 +1,324 @@
 #!/bin/bash
 set -euo pipefail
 
-# Hardcoded Configuration
-FILEMIRAGE_API_TOKEN="9QQH-DGES-CWQZ-FXNV"
-FOLDER_PATH="downloaded_files"
-LINK_FETCH_URL="https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
-KILL_SWITCH_URL="https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
-MAX_PARALLEL_DOWNLOADS=5
-MAX_PARALLEL_UPLOADS=4
+echo "📦 Installing dependencies (aria2, Python3)..."
+if command -v sudo >/dev/null 2>&1; then
+    sudo apt update
+    sudo apt install -y aria2 python3 python3-requests python3-pip curl
+else
+    apt update
+    apt install -y aria2 python3 python3-requests python3-pip curl
+fi
 
-echo "📦 Ensuring Python dependencies are installed..."
-python3 -m pip install --user --quiet requests || pip3 install --quiet requests || true
+pip3 install --break-system-packages magnet2torrent requests || pip3 install magnet2torrent requests || true
 
-mkdir -p "$FOLDER_PATH"
+echo "🧲 Converting magnets to torrents via magnet2torrent..."
+mkdir -p downloads torrents
 
-echo "========================================="
-echo "1. Executing Download Engine"
-echo "========================================="
+python3 - << 'EOF'
+import asyncio
+import os
+import requests
+from magnet2torrent import Magnet2Torrent, FailedToFetchException
 
-cat << 'EOF' > download.py
-import requests, time, os, subprocess
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+link_url = "https://pink-script-snap.lovable.app/api/public/page/0e01cfaf-128c-477f-bff1-9dee23822d97.txt"
 
-link_url = "https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
-kill_url = "https://pink-script-snap.lovable.app/api/public/page/06bb9aeb-ee83-4275-92b0-fcc3552e4a83.txt"
-folder_path = "downloaded_files"
-max_workers = 5
-downloaded_links = set()
-
-def fetch_file(link):
-    print(f"📥 [{datetime.now().strftime('%H:%M:%S')}] Starting: {link}")
-    res = subprocess.run([
-        "wget", "--continue", "--no-check-certificate", "-P", folder_path, link
-    ])
-    if res.returncode == 0:
-        print(f"✅ Finished: {link}")
-        return link
-    print(f"⚠️ Failed: {link}")
-    return None
-
-while True:
-    timestamp = datetime.now().strftime("%H:%M:%S")
-
-    # 1. Kill Switch Check
-    if kill_url:
-        try:
-            ks = requests.get(kill_url, timeout=5).text
-            if "STOP.ALL.TORRENTS" in ks or "STOP.ALL" in ks:
-                print(f"\n🛑 Global kill switch activated! | {timestamp}")
-                break
-        except Exception:
-            pass
-
-    # 2. Fetch and Download Concurrently
-    if link_url:
-        try:
-            page = requests.get(link_url, timeout=5).text
-            new_links = [
-                l.strip() for l in page.splitlines()
-                if l.strip() and not l.strip().startswith("#") and l.strip() not in downloaded_links
-            ]
+async def main():
+    try:
+        ks = requests.get(link_url, timeout=10).text
+        if "STOP.ALL.TORRENTS" in ks:
+            print("🛑 Global kill switch active.")
+            return
             
-            if new_links:
-                print(f"🚀 Downloading {len(new_links)} link(s) concurrently ({max_workers} threads)...")
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(fetch_file, link): link for link in new_links}
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result:
-                            downloaded_links.add(result)
-        except Exception as e:
-            print(f"⚠️ Error fetching links: {e}")
+        for link in ks.splitlines():
+            link = link.strip()
+            if link and not link.startswith('#') and not link.endswith(' NO'):
+                if link.startswith('magnet:'):
+                    print(f"📥 Converting magnet using magnet2torrent: {link[:50]}...", flush=True)
+                    try:
+                        m2t = Magnet2Torrent(link)
+                        filename, torrent_data = await m2t.retrieve_torrent()
+                        torrent_path = os.path.join("torrents", f"{filename}.torrent")
+                        with open(torrent_path, "wb") as f:
+                            f.write(torrent_data)
+                        print(f"✅ Saved torrent: {torrent_path}")
+                    except FailedToFetchException:
+                        print(f"❌ Failed to fetch metadata for magnet link.")
+                elif link.startswith('http'):
+                    tor_data = requests.get(link).content
+                    with open('torrents/temp.torrent', 'wb') as tf:
+                        tf.write(tor_data)
+                    print("✅ Downloaded direct .torrent file.")
+    except Exception as e:
+        print(f"Error processing links: {e}")
 
-    if not link_url or downloaded_links:
-        break
-
-    time.sleep(10)
+asyncio.run(main())
 EOF
 
-python3 download.py
+echo "🚀 Starting concurrent aria2c downloads..."
+python3 - << 'EOF'
+import os
+import glob
+import asyncio
 
-echo "========================================="
-echo "2. Processing & Archiving Media"
-echo "========================================="
+async def download_torrent(torrent_file, sem, max_retries=3):
+    trackers = "udp://tracker.openbittorrent.com:80/announce,udp://tracker.opentrackr.org:1337/announce,udp://tracker.torrent.eu.org:451/announce,udp://exodus.desync.com:6969/announce"
+    
+    async with sem:
+        for attempt in range(1, max_retries + 1):
+            print(f"📥 [Attempt {attempt}/{max_retries}] Starting: {torrent_file}")
+            cmd = [
+                "aria2c",
+                "--console-log-level=warn",
+                "--summary-interval=0",
+                "--dir=downloads",
+                "--seed-time=0",
+                "--bt-stop-timeout=60",
+                "--timeout=60",
+                "--enable-dht=true",
+                "--enable-peer-exchange=true",
+                "--follow-torrent=mem",
+                f"--bt-tracker={trackers}",
+                torrent_file
+            ]
+            
+            proc = await asyncio.Process = await asyncio.create_subprocess_exec(*cmd)
+            await proc.communicate()
+            
+            if proc.returncode == 0:
+                print(f"✅ Successfully finished: {torrent_file}")
+                return torrent_file
+            else:
+                print(f"⚠️ Timeout/Error on {torrent_file} (Attempt {attempt}). Cleaning control files and re-adding...")
+                control_file = f"downloads/{os.path.basename(torrent_file)}.aria2"
+                if os.path.exists(control_file):
+                    os.remove(control_file)
+        
+        print(f"❌ Failed all {max_retries} attempts for: {torrent_file}")
+        return None
 
-cat << 'EOF' > process.py
-import os, shutil, subprocess
+async def main():
+    torrents = glob.glob("torrents/*.torrent")
+    if not torrents:
+        print("⚠️ No torrent files found to download.")
+        return
 
-root_dir = "downloaded_files"
-video_ext = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v")
-sub_ext = (".srt", ".ass", ".vtt", ".sub")
-media_ext = video_ext + sub_ext
-max_size_bytes = 7000 * 1024 * 1024
+    os.makedirs("downloads", exist_ok=True)
+    sem = asyncio.Semaphore(8)
+    
+    tasks = [download_torrent(t, sem) for t in torrents]
+    results = await asyncio.gather(*tasks)
+    finished = [r for r in results if r]
+    
+    print("\n====================")
+    print("🎉 FINISHED DOWNLOADS:")
+    print("====================")
+    for item in finished:
+        print(f"✅ {item}")
+    print("====================\n")
 
-def get_dir_size(p):
-    return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+asyncio.run(main())
+EOF
 
-if os.path.exists(root_dir):
-    for item in os.listdir(root_dir):
-        item_path = os.path.join(root_dir, item)
+echo "📂 Applying custom folder grouping rules..."
+python3 - << 'EOF'
+import os, shutil, re
+from datetime import date
+from collections import defaultdict
+
+folder = "downloads"
+video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+archive_ext = ('.zip', '.rar', '.7z', '.tar', '.gz')
+today_date = date.today().strftime("%Y-%m-%d")
+
+def move_with_subtitles(file_path, target_folder):
+    os.makedirs(target_folder, exist_ok=True)
+    dst_path = os.path.join(target_folder, os.path.basename(file_path))
+    if file_path != dst_path and os.path.exists(file_path):
+        shutil.move(file_path, dst_path)
+    
+    base_stem = os.path.splitext(file_path)[0]
+    for s_ext in sub_ext:
+        sub_file = base_stem + s_ext
+        if os.path.exists(sub_file):
+            sub_dst = os.path.join(target_folder, os.path.basename(sub_file))
+            if sub_file != sub_dst:
+                shutil.move(sub_file, sub_dst)
+
+# 1. Archives (.rar, .zip) -> Dedicated folder per archive
+for r, _, files in os.walk(folder):
+    for f in files:
+        if f.lower().endswith(archive_ext):
+            arc_path = os.path.join(r, f)
+            stem = os.path.splitext(f)[0]
+            target_dir = os.path.join(folder, stem)
+            if os.path.dirname(arc_path) != target_dir:
+                move_with_subtitles(arc_path, target_dir)
+
+# 2. Existing nested folders with >3 videos -> Protect and keep intact
+protected_dirs = set()
+if os.path.exists(folder):
+    for item in os.listdir(folder):
+        item_path = os.path.join(folder, item)
         if os.path.isdir(item_path):
-            videos = [
-                f for r, _, files in os.walk(item_path)
+            vids = [
+                os.path.join(r, f) for r, _, files in os.walk(item_path)
                 for f in files if f.lower().endswith(video_ext)
             ]
-            
-            if len(videos) > 3:
-                zip_name = f"{item}.zip"
-                folder_size = get_dir_size(item_path)
-                orig = os.getcwd()
-                os.chdir(root_dir)
-                if folder_size > max_size_bytes:
-                    subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                else:
-                    subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                os.chdir(orig)
-                shutil.rmtree(item_path)
-            else:
-                for r, _, files in os.walk(item_path):
-                    for f in files:
-                        if f.lower().endswith(media_ext):
-                            dst = os.path.join(root_dir, f)
-                            if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                shutil.rmtree(item_path, ignore_errors=True)
+            if len(vids) > 3:
+                print(f"🔒 Keeping existing nested folder intact (>3 videos): {item}")
+                protected_dirs.add(item_path)
+
+# 3. Collect remaining videos outside protected folders
+remaining_videos = []
+for r, _, files in os.walk(folder):
+    if any(r.startswith(p_dir) for p_dir in protected_dirs):
+        continue
+    for f in files:
+        if f.lower().endswith(video_ext):
+            remaining_videos.append(os.path.join(r, f))
+
+series_regex = re.compile(r'(?i)^(.*?)[.\s_-]+S(\d{1,2})(?:[EX\-]|\b)')
+def clean_series_name(raw_name):
+    return re.sub(r'(?i)(www\.[^\s]+\s*-\s*|^\[.*?\]\s*)', '', raw_name).strip('. -_')
+
+series_groups = defaultdict(list)
+movies = []
+
+for vid_path in remaining_videos:
+    vid_name = os.path.basename(vid_path)
+    parent_name = os.path.basename(os.path.dirname(vid_path))
+    match = series_regex.search(vid_name) or series_regex.search(parent_name)
+    if match:
+        s_name = clean_series_name(match.group(1))
+        s_num = match.group(2)
+        group_key = f"{s_name.lower()}_S{s_num}"
+        series_groups[group_key].append(vid_path)
+    else:
+        movies.append(vid_path)
+
+# 4. Process Series
+for group_key, vids in series_groups.items():
+    if len(vids) > 3:
+        first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
+        target_dir = os.path.join(folder, first_stem)
+        for v in vids:
+            move_with_subtitles(v, target_dir)
+    else:
+        date_dir = os.path.join(folder, today_date)
+        for v in vids:
+            move_with_subtitles(v, date_dir)
+
+# 5. Process Movies (1 video = 1 folder)
+for m in movies:
+    stem = os.path.splitext(os.path.basename(m))[0]
+    movie_dir = os.path.join(folder, stem)
+    move_with_subtitles(m, movie_dir)
+
+# Cleanup empty directories
+for r, dirs, files in os.walk(folder, topdown=False):
+    if r == folder or any(r.startswith(p_dir) for p_dir in protected_dirs):
+        continue
+    if not os.listdir(r):
+        os.rmdir(r)
 EOF
 
-python3 process.py
+echo "📤 Uploading Structured Folders to Gofile using Root Folder API..."
+python3 - << 'EOF'
+import os
+import requests
 
-echo "========================================="
-echo "3. Uploading to Filemirage Target Server"
-echo "========================================="
+GOFILE_TOKEN = ""        # Optional: Account API token
+ROOT_FOLDER_ID = ""      # Recommended: Set your Gofile parent folder ID here
+FOLDER_PATH = 'downloads'
 
-SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
+# 1. Get active server
+try:
+    srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
+    if srv_res.get("status") == "ok" and srv_res['data']['servers']:
+        SERVER = srv_res['data']['servers'][0]['name']
+    else:
+        raise Exception("Could not retrieve active Gofile server.")
+except Exception as e:
+    print(f"❌ Failed to fetch Gofile server: {e}")
+    exit(1)
 
-if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
-    echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
-    exit 1
-fi
-echo "🌐 Target Server: $SERVER"
+def create_gofile_folder(parent_id, folder_name):
+    """Creates an explicitly named folder on Gofile under parent_id."""
+    url = "https://api.gofile.io/contents/createFolder"
+    payload = {
+        "parentFolderId": parent_id,
+        "folderName": folder_name
+    }
+    if GOFILE_TOKEN:
+        payload["token"] = GOFILE_TOKEN
+        
+    try:
+        res = requests.post(url, json=payload, timeout=15).json()
+        if res.get("status") == "ok":
+            return res['data']['id'], res['data'].get('downloadPage')
+    except Exception as e:
+        print(f"⚠️ API folder creation error: {e}")
+    return None, None
 
-if [ ! -d "$FOLDER_PATH" ]; then
-    echo "❌ Error: Folder $FOLDER_PATH does not exist."
-    exit 1
-fi
+def upload_to_gofile(file_path, folder_id=None):
+    """Uploads a file to a specific Gofile folder ID."""
+    url = f"https://{SERVER}.gofile.io/contents/uploadfile"
+    data = {}
+    if GOFILE_TOKEN:
+        data['token'] = GOFILE_TOKEN
+    if folder_id:
+        data['folderId'] = folder_id
 
-export SERVER
-export FILEMIRAGE_API_TOKEN
-upload_file() {
-    FILE="$1"
-    if [[ "$FILE" == *".tmp"* || "$FILE" == *".part"* ]]; then return; fi
-    FILENAME=$(basename "$FILE")
-    echo "📤 Uploading: $FILENAME..."
-    
-    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "Authorization: Bearer $FILEMIRAGE_API_TOKEN" \
-        -F "file=@$FILE;filename=$FILENAME" \
-        "$SERVER/upload.php")
-    
-    if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
-        echo "✅ Successfully uploaded: $FILENAME"
-    else
-        echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
-        exit 1
-    fi
-}
+    with open(file_path, 'rb') as f:
+        files = {'file': f}
+        res = requests.post(url, data=data, files=files, timeout=3600)
+        return res.json()
 
-export -f upload_file
-find "$FOLDER_PATH" -type f | sort | xargs -P "$MAX_PARALLEL_UPLOADS" -I {} bash -c 'upload_file "$@"' _ {}
+if os.path.exists(FOLDER_PATH):
+    for item in os.listdir(FOLDER_PATH):
+        item_path = os.path.join(FOLDER_PATH, item)
+        
+        if os.path.isdir(item_path):
+            print(f"\n📁 Processing local folder: {item}")
+            
+            # Create folder on Gofile named after the local folder stem
+            gofile_folder_id = None
+            gofile_url = None
+            
+            if ROOT_FOLDER_ID:
+                gofile_folder_id, gofile_url = create_gofile_folder(ROOT_FOLDER_ID, item)
+            
+            # Fallback upload if ROOT_FOLDER_ID not set
+            for root, _, files in os.walk(item_path):
+                for filename in files:
+                    if any(x in filename for x in [".!qB", ".part", ".aria2"]):
+                        continue
+                    file_path = os.path.join(root, filename)
+                    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                    print(f"  ⬆️ Uploading: {filename} ({file_size_mb:.2f} MB)")
+                    
+                    res = upload_to_gofile(file_path, folder_id=gofile_folder_id)
+                    if res.get("status") == "ok":
+                        data = res.get("data", {})
+                        if not gofile_folder_id:
+                            gofile_folder_id = data.get("parentFolder")
+                            gofile_url = data.get("downloadPage")
+                        print(f"  ✅ Uploaded {filename}")
+                    else:
+                        print(f"  ❌ Failed uploading {filename}: {res}")
+            
+            if gofile_url:
+                print(f"🔗 Folder Link: {gofile_url}")
+
+        elif os.path.isfile(item_path):
+            if any(x in item for x in [".!qB", ".part", ".aria2"]):
+                continue
+            file_size_mb = os.path.getsize(item_path) / (1024 * 1024)
+            print(f"\n⬆️ Uploading file: {item} ({file_size_mb:.2f} MB)")
+            res = upload_to_gofile(item_path, folder_id=ROOT_FOLDER_ID if ROOT_FOLDER_ID else None)
+            if res.get("status") == "ok":
+                data = res.get("data", {})
+                print(f"🔗 File Link: {data.get('downloadPage')}")
+EOF
