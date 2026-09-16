@@ -93,7 +93,7 @@ workflows:
                         for attempt in range(1, max_retries + 1):
                             print(f"📥 [Attempt {attempt}/{max_retries}] Starting: {target[:80]}", flush=True)
                             cmd = [
-                                "aria2c", "--console-log-level=notice", "--summary-interval=2",
+                                "aria2c", "--console-log-level=notice", "--summary-interval=5",
                                 "--dir=downloads", "--seed-time=0", "--file-allocation=none",
                                 "--enable-dht=true", "--enable-peer-exchange=true",
                                 "--follow-torrent=mem", f"--bt-tracker={trackers}", target
@@ -107,6 +107,10 @@ workflows:
                                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
                                     if not line: break
                                     line_str = line.decode('utf-8', errors='ignore').strip()
+                                    
+                                    if line_str:
+                                        print(f"[{os.path.basename(target)[:20]}] {line_str}", flush=True)
+                                        
                                     if not download_started:
                                         match = re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str)
                                         if match and float(match.group(1)) > 0:
