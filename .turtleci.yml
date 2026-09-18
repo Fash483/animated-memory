@@ -1,0 +1,6 @@
+version: 1
+pipeline:
+  stages:
+    - name: build
+      steps:
+        - run: echo "Initializing TurtleCI Pipeline"
