@@ -1,5 +1,5 @@
 version: 1
-name: "Mobile Build Pipeline"
+name: "Mobile Build Workflow"
 on:
   push:
     branches:
@@ -7,7 +7,8 @@ on:
       - master
 
 jobs:
-  build_job:
+  test_connection:
+    name: "Validate GitHub Hook"
     steps:
-      - name: "Run Build Script"
-        run: echo "TurtleCI pipeline triggered successfully!"
+      - name: "Say Hello"
+        run: echo "TurtleCI successfully connected to GitHub!"
