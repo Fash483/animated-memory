@@ -9,6 +9,7 @@ on:
 jobs:
   test_connection:
     name: "Validate GitHub Hook"
+    builder: ubuntu-22.04         # <--- TURTLECI REQUIRES THIS CRITICAL LINE
     steps:
       - name: "Say Hello"
         run: echo "TurtleCI successfully connected to GitHub!"
