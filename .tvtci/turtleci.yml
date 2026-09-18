@@ -1,0 +1,13 @@
+version: 1
+name: "Mobile Build Pipeline"
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build_job:
+    steps:
+      - name: "Run Build Script"
+        run: echo "TurtleCI pipeline triggered successfully!"
