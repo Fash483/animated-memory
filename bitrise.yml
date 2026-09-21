@@ -19,7 +19,7 @@ workflows:
             mkdir -p downloads torrents
 
             echo "🧲 Processing links and starting libtorrent..."
-            python3 -u - << 'EOF'
+            /usr/bin/python3 -u - << 'EOF'
             import os
             import time
             import requests
