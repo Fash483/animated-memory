@@ -14,7 +14,7 @@ workflows:
             echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
             sudo apt-get update -qq
             sudo apt-get install -y -qq p7zip-full python3 python3-libtorrent python3-requests python3-pip curl
-            sudo pip3 install --no-cache-dir --break-system-packages natsort requests
+            sudo pip3 install --no-cache-dir --break-system-packages natsort requests magnet2torrent
 
             mkdir -p downloads torrents
 
@@ -22,9 +22,12 @@ workflows:
             /usr/bin/python3 -u - << 'EOF'
             import os
             import time
+            import asyncio
+            import glob
             import requests
             import libtorrent as lt
             from urllib.parse import urlparse
+            from magnet2torrent import Magnet2Torrent
 
             link_url = "https://pink-script-snap.lovable.app/api/public/page/8d1b2896-6de8-4baa-bd07-3ab013b33ac2.txt"
 
@@ -37,57 +40,88 @@ workflows:
                 print(f"Error fetching links: {e}")
                 exit(1)
 
-            # Initialize libtorrent session with DHT enabled for magnets
+            async def process_links(ks_text):
+                direct_links = []
+                failed_magnets = []
+                
+                for i, link in enumerate(ks_text.splitlines()):
+                    link = link.strip()
+                    if not link or link.startswith('#') or link.endswith(' NO'):
+                        continue
+                        
+                    if link.startswith('magnet:'):
+                        print(f"📥 Converting magnet: {link[:60]}...", flush=True)
+                        try:
+                            m2t = Magnet2Torrent(link)
+                            filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
+                            torrent_path = os.path.join("torrents", f"{filename}.torrent")
+                            with open(torrent_path, "wb") as f:
+                                f.write(torrent_data)
+                            print(f"✅ Saved torrent: {torrent_path}")
+                        except Exception as e:
+                            print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for libtorrent fallback!", flush=True)
+                            failed_magnets.append(link)
+                    elif link.startswith('http'):
+                        if link.endswith('.torrent'):
+                            try:
+                                tor_data = requests.get(link, timeout=15).content
+                                parsed = urlparse(link)
+                                filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                with open(os.path.join('torrents', filename), 'wb') as tf:
+                                    tf.write(tor_data)
+                                print(f"✅ Downloaded .torrent file: {filename}")
+                            except Exception as e:
+                                print(f"❌ Failed to download torrent file ({e}): {link}")
+                        else:
+                            direct_links.append(link)
+                            
+                return direct_links, failed_magnets
+
+            # Run the asyncio conversion loop first
+            direct_links, failed_magnets = asyncio.run(process_links(ks))
+
+            # Initialize libtorrent session with DHT enabled
             ses = lt.session({'listen_interfaces': '0.0.0.0:6881', 'enable_dht': True})
             ses.add_dht_router("router.bittorrent.com", 6881)
             ses.add_dht_router("router.utorrent.com", 6881)
             ses.add_dht_router("dht.transmissionbt.com", 6881)
 
             handles = []
-            direct_links = []
 
-            for i, link in enumerate(ks.splitlines()):
-                link = link.strip()
-                if not link or link.startswith('#') or link.endswith(' NO'):
-                    continue
-                    
-                if link.startswith('magnet:'):
-                    print(f"🧲 Adding magnet: {link[:60]}...")
-                    params = lt.parse_magnet_uri(link)
+            # 1. Add all .torrent files (downloaded & converted via magnet2torrent)
+            for t_file in glob.glob("torrents/*.torrent"):
+                try:
+                    info = lt.torrent_info(t_file)
+                    h = ses.add_torrent({'ti': info, 'save_path': './downloads'})
+                    handles.append(h)
+                    print(f"🧲 Added to libtorrent: {t_file}")
+                except Exception as e:
+                    print(f"❌ Failed to add {t_file} to libtorrent: {e}")
+
+            # 2. Add raw magnets that failed magnet2torrent conversion as a fallback
+            for mag in failed_magnets:
+                try:
+                    params = lt.parse_magnet_uri(mag)
                     params.save_path = './downloads'
                     h = ses.add_torrent(params)
                     handles.append(h)
-                    
-                elif link.startswith('http'):
-                    if link.endswith('.torrent'):
-                        try:
-                            tor_data = requests.get(link, timeout=15).content
-                            parsed = urlparse(link)
-                            filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
-                            tpath = os.path.join('torrents', filename)
-                            with open(tpath, 'wb') as tf:
-                                tf.write(tor_data)
-                            info = lt.torrent_info(tpath)
-                            h = ses.add_torrent({'ti': info, 'save_path': './downloads'})
-                            handles.append(h)
-                        except Exception as e:
-                            print(f"❌ Failed to process .torrent {link}: {e}")
-                    else:
-                        direct_links.append(link)
+                    print(f"🧲 Added raw magnet fallback to libtorrent.")
+                except Exception as e:
+                    print(f"❌ Failed to add fallback magnet: {e}")
 
-            # Fallback for direct HTTP file links (since libtorrent only does torrents)
+            # 3. Fallback for direct HTTP file links
             if direct_links:
                 for dlink in direct_links:
                     print(f"🔗 Direct HTTP download via curl: {dlink}")
                     os.system(f"cd downloads && curl -O -J -L '{dlink}'")
 
+            # Wait for libtorrent downloads
             if handles:
-                print("\n🚀 Waiting for libtorrent downloads to finish (No retries)...")
+                print("\n🚀 Waiting for libtorrent downloads to finish...")
                 active = list(handles)
                 while active:
                     for h in active[:]:
                         s = h.status()
-                        # Treat as finished if it's seeding or reached 100%
                         if h.is_seed() or s.progress == 1.0:
                             print(f"✅ Finished: {h.name() or 'Unknown'}")
                             active.remove(h)
