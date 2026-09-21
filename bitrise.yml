@@ -14,7 +14,9 @@ workflows:
             echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
             sudo apt-get update -qq
             sudo apt-get install -y -qq p7zip-full python3 python3-libtorrent python3-requests python3-pip curl
-            sudo pip3 install --no-cache-dir --break-system-packages natsort requests magnet2torrent
+            
+            # FIXED: Using python3 -m pip guarantees packages are installed for the exact Python version running the script
+            sudo python3 -m pip install --no-cache-dir --break-system-packages natsort requests magnet2torrent
 
             mkdir -p downloads torrents
 
@@ -80,8 +82,14 @@ workflows:
             # Run the asyncio conversion loop first
             direct_links, failed_magnets = asyncio.run(process_links(ks))
 
-            # Initialize libtorrent session with DHT enabled
-            ses = lt.session({'listen_interfaces': '0.0.0.0:6881', 'enable_dht': True})
+            # Initialize libtorrent session with DHT enabled and 10 concurrent downloads
+            session_settings = {
+                'listen_interfaces': '0.0.0.0:6881', 
+                'enable_dht': True,
+                'active_downloads': 10,   # Force 10 concurrent downloads
+                'active_limit': 15        # Total active limit (downloads + checking + seeding)
+            }
+            ses = lt.session(session_settings)
             ses.add_dht_router("router.bittorrent.com", 6881)
             ses.add_dht_router("router.utorrent.com", 6881)
             ses.add_dht_router("dht.transmissionbt.com", 6881)
@@ -319,7 +327,6 @@ workflows:
                 upload_queue = []
                 for root, dirs, files in os.walk(FOLDER_PATH):
                     for filename in files:
-                        # Exclude in-progress libtorrent parts if any exist
                         if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
                             upload_queue.append(os.path.join(root, filename))
                 
