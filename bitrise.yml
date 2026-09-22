@@ -143,7 +143,7 @@ workflows:
             EOF
 
             echo "📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting..."
-            python3 -u - << 'EOF'
+            /usr/bin/python3 -u - << 'EOF'
             import os, shutil, subprocess, re
             from collections import defaultdict
             from natsort import natsorted
@@ -257,7 +257,7 @@ workflows:
             EOF
 
             echo "📤 Running Parallel Multi-Threaded Uploads to Filemirage..."
-            python3 -u - << 'EOF'
+            /usr/bin/python3 -u - << 'EOF'
             import os
             import subprocess
             import requests
