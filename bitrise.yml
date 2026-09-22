@@ -15,7 +15,7 @@ workflows:
             sudo apt-get update -qq
             sudo apt-get install -y -qq p7zip-full python3 python3-libtorrent python3-requests python3-pip curl
             
-            # FIXED: Using python3 -m pip guarantees packages are installed for the exact Python version running the script
+            # Use system pip to guarantee packages are installed for the exact Python version running the script
             sudo python3 -m pip install --no-cache-dir --break-system-packages natsort requests magnet2torrent
 
             mkdir -p downloads torrents
@@ -95,6 +95,7 @@ workflows:
             ses.add_dht_router("dht.transmissionbt.com", 6881)
 
             handles = []
+            completed_list = []
 
             # 1. Add all .torrent files (downloaded & converted via magnet2torrent)
             for t_file in glob.glob("torrents/*.torrent"):
@@ -121,7 +122,9 @@ workflows:
             if direct_links:
                 for dlink in direct_links:
                     print(f"🔗 Direct HTTP download via curl: {dlink}")
-                    os.system(f"cd downloads && curl -O -J -L '{dlink}'")
+                    result = os.system(f"cd downloads && curl -O -J -L '{dlink}'")
+                    if result == 0:
+                        completed_list.append(f"[Direct Link] {dlink.split('/')[-1]}")
 
             # Wait for libtorrent downloads
             if handles:
@@ -131,15 +134,38 @@ workflows:
                     for h in active[:]:
                         s = h.status()
                         if h.is_seed() or s.progress == 1.0:
-                            print(f"✅ Finished: {h.name() or 'Unknown'}")
+                            name = h.name() or 'Unknown'
+                            print(f"✅ Finished: {name}")
+                            completed_list.append(f"[Torrent] {name}")
                             active.remove(h)
                         else:
                             if s.has_metadata:
-                                print(f"📊 Progress [{h.name()[:30]}]: {s.progress * 100:.2f}% | Peers: {s.num_peers} | Down: {s.download_rate / 1000:.1f} kB/s", flush=True)
+                                rate = s.download_rate
+                                eta_str = "Calculating..."
+                                if rate > 0:
+                                    remaining_bytes = s.total_wanted - s.total_wanted_done
+                                    if remaining_bytes < 0: remaining_bytes = 0
+                                    eta_sec = int(remaining_bytes / rate)
+                                    m, s_sec = divmod(eta_sec, 60)
+                                    h_hr, m = divmod(m, 60)
+                                    if h_hr > 0:
+                                        eta_str = f"{h_hr:02d}:{m:02d}:{s_sec:02d}"
+                                    else:
+                                        eta_str = f"{m:02d}:{s_sec:02d}"
+                                        
+                                print(f"📊 Progress [{h.name()[:30]}]: {s.progress * 100:.2f}% | Peers: {s.num_peers} | Down: {rate / 1000:.1f} kB/s | ETA: {eta_str}", flush=True)
                             else:
                                 print(f"⏳ Downloading metadata for magnet...", flush=True)
                     if active:
                         time.sleep(10)
+            
+            print("\n🎉 === All Completed Downloads ===")
+            if completed_list:
+                for item in completed_list:
+                    print(f" - {item}")
+            else:
+                print(" - No downloads completed successfully.")
+            print("================================\n")
             EOF
 
             echo "📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting..."
