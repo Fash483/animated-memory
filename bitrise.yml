@@ -223,7 +223,9 @@ workflows:
                 # 3. Build independent standalone .zip archives
                 num_batches = len(batches)
                 orig_dir = os.getcwd()
-                safe_group_name = re.sub(r'[\\/*?:"<>|]', '_', group_name).strip() or "Batch"
+                
+                # Strip commas and semicolons to prevent curl form-data parsing failures
+                safe_group_name = re.sub(r'[\\/*?:"<>|,;]', '_', group_name).strip() or "Batch"
 
                 for idx, batch_files in enumerate(batches):
                     if num_batches == 1:
@@ -335,6 +337,7 @@ workflows:
             echo "📤 Running Parallel Multi-Threaded Uploads to Filemirage..."
             /usr/bin/python3 -u - << 'EOF'
             import os
+            import re
             import subprocess
             import requests
             import time
@@ -354,6 +357,15 @@ workflows:
 
             def upload_single_file(file_path):
                 filename = os.path.basename(file_path)
+                
+                # Pre-upload rename safety check: remove commas & semicolons to prevent curl errors
+                clean_filename = re.sub(r'[,;]', '_', filename)
+                if clean_filename != filename:
+                    new_file_path = os.path.join(os.path.dirname(file_path), clean_filename)
+                    os.rename(file_path, new_file_path)
+                    file_path = new_file_path
+                    filename = clean_filename
+
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
                 
